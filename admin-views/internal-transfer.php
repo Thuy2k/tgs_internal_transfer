@@ -30,6 +30,11 @@ if (!defined('ABSPATH')) {
         </button>
     </li>
     <li class="nav-item" role="presentation">
+        <button class="nav-link" id="history-tab" data-bs-toggle="tab" data-bs-target="#history-panel" type="button">
+            <i class="bx bx-history me-1"></i>Lịch sử phiếu đã tạo
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
         <button class="nav-link" id="shops-tab" data-bs-toggle="tab" data-bs-target="#shops-panel" type="button">
             <i class="bx bx-store me-1"></i>Quản lý Shop triển khai
         </button>
@@ -104,7 +109,86 @@ if (!defined('ABSPATH')) {
         </div>
     </div>
 
-    <!-- Tab 2: Quản lý Shop triển khai -->
+    <!-- Tab 2: Lịch sử phiếu đã tạo -->
+    <div class="tab-pane fade" id="history-panel">
+        <div class="card mb-3">
+            <div class="card-body">
+                <div class="row g-3 align-items-end">
+                    <div class="col-md-2">
+                        <label for="histDateFrom" class="form-label mb-1 small fw-bold">Từ ngày</label>
+                        <input type="date" class="form-control" id="histDateFrom">
+                    </div>
+                    <div class="col-md-2">
+                        <label for="histDateTo" class="form-label mb-1 small fw-bold">Đến ngày</label>
+                        <input type="date" class="form-control" id="histDateTo">
+                    </div>
+                    <div class="col-md-4">
+                        <label for="histSearch" class="form-label mb-1 small fw-bold">Tìm kiếm</label>
+                        <input type="text" class="form-control" id="histSearch" placeholder="Mã shop, tên shop hoặc mã phiếu HTsoft...">
+                    </div>
+                    <div class="col-md-4">
+                        <button type="button" class="btn btn-primary" id="histFilterBtn">
+                            <i class="bx bx-search me-1"></i>Lọc
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary" id="histTodayBtn">Hôm nay</button>
+                        <button type="button" class="btn btn-outline-secondary" id="histWeekBtn">7 ngày</button>
+                        <button type="button" class="btn btn-outline-secondary" id="histAllBtn">Tất cả</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header bg-light d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">
+                    <i class="bx bx-history me-2"></i>Phiếu đã tạo
+                    <span class="badge bg-primary ms-2" id="histTotalBadge">0 phiếu</span>
+                    <span class="badge bg-info ms-1" id="histShopBadge">0 shop</span>
+                </h5>
+                <span class="text-muted small" id="histRangeLabel"></span>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover table-sm align-middle" id="historyTable">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Ngày tạo</th>
+                                <th>Mã phiếu HTsoft</th>
+                                <th>Mã shop</th>
+                                <th>Tên shop</th>
+                                <th>Phiếu mua nội bộ</th>
+                                <th>Phiếu nhập</th>
+                                <th class="text-end">Số dòng</th>
+                                <th class="text-end">Tổng SL</th>
+                                <th>Người tạo</th>
+                            </tr>
+                        </thead>
+                        <tbody id="historyTableBody">
+                            <tr>
+                                <td colspan="9" class="text-center text-muted py-4">
+                                    <i class="bx bx-loader bx-spin"></i> Đang tải...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="d-flex justify-content-between align-items-center mt-3">
+                    <span class="text-muted small" id="histPageInfo"></span>
+                    <div class="btn-group btn-group-sm" role="group">
+                        <button type="button" class="btn btn-outline-secondary" id="histPrevBtn" disabled>
+                            <i class="bx bx-chevron-left"></i> Trước
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary" id="histNextBtn" disabled>
+                            Sau <i class="bx bx-chevron-right"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab 3: Quản lý Shop triển khai -->
     <div class="tab-pane fade" id="shops-panel">
         <div class="card">
             <div class="card-header bg-light d-flex justify-content-between align-items-center">

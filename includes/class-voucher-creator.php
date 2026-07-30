@@ -9,6 +9,12 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
+/**
+ * Ném ra khi phiếu (voucher_code + site_code) đã được người khác tạo trước đó.
+ * Tách riêng để tầng AJAX trả về mã lỗi 'already_created' cho JS xử lý.
+ */
+class TGS_IT_Duplicate_Voucher_Exception extends Exception {}
+
 class TGS_IT_Voucher_Creator {
 
     private $blog_id;
@@ -30,11 +36,24 @@ class TGS_IT_Voucher_Creator {
      * @return array
      */
     public function create_vouchers($voucher_code, $site_code, $items, $note) {
+        // Chặn sớm (không lock): phiếu đã tạo xong từ trước thì báo luôn,
+        // tránh phải chờ lock ở bước claim bên dưới.
+        $existing = $this->find_tracker_row($voucher_code, $site_code);
+        if ($existing) {
+            throw new TGS_IT_Duplicate_Voucher_Exception($this->duplicate_message($existing));
+        }
+
         // Switch sang blog đích
         switch_to_blog($this->blog_id);
 
         try {
             $this->wpdb->query('START TRANSACTION');
+
+            // 0. Chốt chỗ trong tracker TRƯỚC khi tạo bất cứ thứ gì.
+            //    UNIQUE KEY (voucher_code, site_code) chính là chốt chống trùng
+            //    ở tầng DB: 2 người bấm cùng lúc thì người sau bị chặn ngay,
+            //    chưa tạo phiếu/dòng hàng nào nên không có gì phải dọn.
+            $tracker_id = $this->claim_tracker_slot($voucher_code, $site_code);
 
             // 1. Tạo phiếu Mua Nội Bộ (type 13)
             $purchase_ledger_id = $this->create_purchase_ledger($voucher_code, $note);
@@ -58,8 +77,8 @@ class TGS_IT_Voucher_Creator {
             // 7. Tạo bản ghi transfer_ledger
             $transfer_ledger_id = $this->create_transfer_ledger($purchase_ledger_id, $item_ids);
 
-            // 8. Lưu vào tracker
-            $this->save_to_tracker($voucher_code, $site_code, $purchase_ledger_id, $import_ledger_id);
+            // 8. Ghi ID phiếu vào dòng tracker đã chốt ở bước 0
+            $this->update_tracker_ledger_ids($tracker_id, $purchase_ledger_id, $import_ledger_id);
 
             $this->wpdb->query('COMMIT');
 
@@ -334,22 +353,126 @@ class TGS_IT_Voucher_Creator {
     }
 
     /**
-     * Lưu vào bảng tracker
+     * Tên bảng tracker (bảng global, dùng base_prefix nên không đổi khi switch_to_blog)
      */
-    private function save_to_tracker($voucher_code, $site_code, $purchase_ledger_id, $import_ledger_id) {
-        $table = $this->wpdb->base_prefix . 'global_transfer_voucher_tracker';
+    private function tracker_table() {
+        return $this->wpdb->base_prefix . 'global_transfer_voucher_tracker';
+    }
+
+    /**
+     * Tìm dòng tracker của 1 phiếu (nếu đã tạo)
+     */
+    private function find_tracker_row($voucher_code, $site_code) {
+        $table = $this->tracker_table();
+
+        return $this->wpdb->get_row($this->wpdb->prepare(
+            "SELECT id, blog_id, purchase_ledger_id, import_ledger_id, user_id, created_at
+             FROM {$table}
+             WHERE voucher_code = %s AND site_code = %s",
+            $voucher_code,
+            $site_code
+        ));
+    }
+
+    /**
+     * Chốt chỗ trong tracker trước khi tạo phiếu.
+     *
+     * Insert này chạy trong transaction, dựa vào UNIQUE KEY (voucher_code, site_code):
+     * - Nếu người khác đang tạo dở cùng phiếu, InnoDB giữ lock -> request này chờ,
+     *   rồi nhận lỗi duplicate khi bên kia commit (hoặc chốt được nếu bên kia rollback).
+     * - Nếu phiếu đã tạo xong -> lỗi duplicate ngay.
+     *
+     * @return int ID dòng tracker vừa chốt
+     * @throws TGS_IT_Duplicate_Voucher_Exception|Exception
+     */
+    private function claim_tracker_slot($voucher_code, $site_code) {
+        $table = $this->tracker_table();
 
         $data = array(
             'voucher_code' => $voucher_code,
             'site_code' => $site_code,
             'blog_id' => $this->blog_id,
-            'purchase_ledger_id' => $purchase_ledger_id,
-            'import_ledger_id' => $import_ledger_id,
             'user_id' => get_current_user_id(),
             'created_at' => current_time('mysql'),
         );
 
-        $this->wpdb->insert($table, $data);
+        // Tắt in lỗi SQL: lỗi duplicate là tình huống bình thường ở đây, và nếu
+        // để WP echo ra thì HTML lỗi sẽ lẫn vào JSON response của AJAX.
+        $suppress = $this->wpdb->suppress_errors(true);
+
+        // Nếu người khác đang tạo dở cùng phiếu, insert này sẽ phải chờ lock.
+        // Hạ timeout xuống để báo lỗi sớm thay vì treo request tới 50s (mặc định).
+        $this->wpdb->query('SET SESSION innodb_lock_wait_timeout = 15');
+
+        $inserted = $this->wpdb->insert($table, $data);
+        $last_error = $this->wpdb->last_error;
+        $this->wpdb->suppress_errors($suppress);
+
+        if ($inserted) {
+            return $this->wpdb->insert_id;
+        }
+
+        if (stripos($last_error, 'duplicate') !== false) {
+            $existing = $this->find_tracker_row($voucher_code, $site_code);
+            throw new TGS_IT_Duplicate_Voucher_Exception($this->duplicate_message($existing));
+        }
+
+        // Lock wait timeout / deadlock = người khác đang tạo phiếu này ngay lúc này.
+        // Không có gì được ghi (transaction sẽ rollback), chỉ cần thử lại sau.
+        if (stripos($last_error, 'lock wait timeout') !== false || stripos($last_error, 'deadlock') !== false) {
+            throw new Exception(
+                "Phiếu {$voucher_code} (kho {$site_code}) đang được người khác tạo ngay lúc này. "
+                . "Chưa có dữ liệu nào được ghi - vui lòng chờ vài giây rồi kiểm tra tab \"Lịch sử phiếu đã tạo\"."
+            );
+        }
+
+        throw new Exception("Không ghi được tracker phiếu {$voucher_code} / kho {$site_code}: {$last_error}");
+    }
+
+    /**
+     * Ghi ID 2 phiếu vào dòng tracker đã chốt
+     */
+    private function update_tracker_ledger_ids($tracker_id, $purchase_ledger_id, $import_ledger_id) {
+        $updated = $this->wpdb->update(
+            $this->tracker_table(),
+            array(
+                'purchase_ledger_id' => $purchase_ledger_id,
+                'import_ledger_id' => $import_ledger_id,
+            ),
+            array('id' => $tracker_id)
+        );
+
+        if ($updated === false) {
+            throw new Exception("Không cập nhật được tracker (ID {$tracker_id}): " . $this->wpdb->last_error);
+        }
+    }
+
+    /**
+     * Thông báo cho trường hợp phiếu đã được người khác tạo
+     */
+    private function duplicate_message($existing) {
+        if (!$existing) {
+            return 'Phiếu này đã được tạo trước đó, đã bỏ qua để tránh tạo trùng.';
+        }
+
+        $who = '';
+        if (!empty($existing->user_id)) {
+            $user = get_userdata($existing->user_id);
+            if ($user) {
+                $who = ' bởi ' . $user->display_name;
+            }
+        }
+
+        $when = !empty($existing->created_at)
+            ? date_i18n('d/m/Y H:i', strtotime($existing->created_at))
+            : '';
+
+        return sprintf(
+            'Phiếu này đã được tạo%s%s (phiếu mua nội bộ ID %s). Đã bỏ qua để tránh tạo trùng.',
+            $who,
+            $when ? ' lúc ' . $when : '',
+            $existing->purchase_ledger_id ?: '-'
+        );
     }
 
     /**

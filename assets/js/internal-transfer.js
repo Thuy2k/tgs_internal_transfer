@@ -209,9 +209,7 @@ jQuery(document).ready(function($) {
                     bootstrap.Modal.getInstance(document.getElementById('voucherModal')).hide();
 
                     // Update UI: đánh dấu phiếu đã tạo
-                    $('.list-group-item.active').addClass('list-group-item-success').append(
-                        '<span class="badge bg-success ms-2">Đã tạo</span>'
-                    ).off('click');
+                    markVoucherAsCreated();
 
                     $('#voucherTabsContent').html(`
                         <div class="alert alert-success">
@@ -221,8 +219,22 @@ jQuery(document).ready(function($) {
                             Phiếu nhập tự động ID: ${response.data.import_ledger_id}
                         </div>
                     `);
+                } else if (response.data && response.data.code === 'already_created') {
+                    // Người khác đã tạo phiếu này trong lúc mình đang mở màn hình
+                    showAlert('warning', response.data.message);
+                    bootstrap.Modal.getInstance(document.getElementById('voucherModal')).hide();
+
+                    markVoucherAsCreated();
+                    $('#voucherTabsContent').html(`
+                        <div class="alert alert-warning">
+                            <i class="bx bx-error-circle me-2"></i>
+                            <strong>Phiếu đã tồn tại - không tạo lại.</strong><br>
+                            ${response.data.message}<br>
+                            Xem chi tiết ở tab <strong>Lịch sử phiếu đã tạo</strong>.
+                        </div>
+                    `);
                 } else {
-                    showAlert('danger', response.data.message || 'Lỗi tạo phiếu');
+                    showAlert('danger', (response.data && response.data.message) || 'Lỗi tạo phiếu');
                 }
                 $btn.prop('disabled', false).html('<i class="bx bx-check me-1"></i>Tạo phiếu');
             },
@@ -231,6 +243,195 @@ jQuery(document).ready(function($) {
                 $btn.prop('disabled', false).html('<i class="bx bx-check me-1"></i>Tạo phiếu');
             }
         });
+    });
+
+    function markVoucherAsCreated() {
+        const $active = $('.list-group-item.active');
+        if ($active.find('.it-created-badge').length === 0) {
+            $active.append('<span class="badge bg-success ms-2 it-created-badge">Đã tạo</span>');
+        }
+        $active.addClass('list-group-item-success').off('click');
+    }
+
+    // ========== LỊCH SỬ PHIẾU ĐÃ TẠO ==========
+    let histPage = 1;
+    let histTotalPages = 1;
+
+    function todayStr() {
+        const d = new Date();
+        const pad = n => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    }
+
+    function daysAgoStr(days) {
+        const d = new Date();
+        d.setDate(d.getDate() - days);
+        const pad = n => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    }
+
+    function loadHistory(page) {
+        histPage = page || 1;
+
+        $('#historyTableBody').html(
+            '<tr><td colspan="9" class="text-center text-muted py-4"><i class="bx bx-loader bx-spin"></i> Đang tải...</td></tr>'
+        );
+
+        $.ajax({
+            url: tgsInternalTransfer.ajaxUrl,
+            type: 'POST',
+            data: {
+                action: 'tgs_it_get_history',
+                nonce: tgsInternalTransfer.nonce,
+                date_from: $('#histDateFrom').val(),
+                date_to: $('#histDateTo').val(),
+                search: $('#histSearch').val(),
+                page: histPage
+            },
+            success: function(response) {
+                if (response.success) {
+                    renderHistory(response.data);
+                } else {
+                    $('#historyTableBody').html(
+                        '<tr><td colspan="9" class="text-center text-danger py-4">' +
+                        ((response.data && response.data.message) || 'Lỗi tải dữ liệu') + '</td></tr>'
+                    );
+                }
+            },
+            error: function() {
+                $('#historyTableBody').html(
+                    '<tr><td colspan="9" class="text-center text-danger py-4">Lỗi kết nối server</td></tr>'
+                );
+            }
+        });
+    }
+
+    function renderHistory(data) {
+        histTotalPages = data.total_pages || 1;
+
+        $('#histTotalBadge').text(data.total + ' phiếu');
+        $('#histShopBadge').text(data.total_shops + ' shop');
+
+        const from = $('#histDateFrom').val();
+        const to = $('#histDateTo').val();
+        $('#histRangeLabel').text(
+            from || to ? `Khoảng: ${from || '...'} → ${to || '...'}` : 'Tất cả thời gian'
+        );
+
+        const $tbody = $('#historyTableBody');
+        $tbody.empty();
+
+        if (!data.rows.length) {
+            $tbody.html(
+                '<tr><td colspan="9" class="text-center text-muted py-4">' +
+                'Không có phiếu nào trong khoảng lọc này</td></tr>'
+            );
+        } else {
+            data.rows.forEach(function(row) {
+                let purchaseCell = row.purchase_ledger_code
+                    ? `<code>${esc(row.purchase_ledger_code)}</code>`
+                    : '-';
+                purchaseCell += `<br><small class="text-muted">ID ${row.purchase_ledger_id || '-'}</small>`;
+
+                if (parseInt(row.is_ledger_deleted, 10) === 1) {
+                    purchaseCell += ' <span class="badge bg-danger">Đã xóa</span>';
+                } else if (parseInt(row.ledger_missing, 10) === 1) {
+                    purchaseCell += ' <span class="badge bg-warning text-dark">Không tìm thấy</span>';
+                }
+
+                let importCell = row.import_ledger_code
+                    ? `<code>${esc(row.import_ledger_code)}</code>`
+                    : '-';
+                importCell += `<br><small class="text-muted">ID ${row.import_ledger_id || '-'}</small>`;
+
+                const shopBadge = row.shop_is_active !== null && parseInt(row.shop_is_active, 10) === 0
+                    ? ' <span class="badge bg-secondary">Tạm dừng</span>'
+                    : '';
+
+                $tbody.append(`
+                    <tr>
+                        <td class="text-nowrap">${formatDateTime(row.created_at)}</td>
+                        <td><code>${esc(row.voucher_code)}</code></td>
+                        <td><code>${esc(row.site_code)}</code></td>
+                        <td>${esc(row.shop_name || '-')}${shopBadge}</td>
+                        <td>${purchaseCell}</td>
+                        <td>${importCell}</td>
+                        <td class="text-end"><strong>${row.items_count}</strong></td>
+                        <td class="text-end">${formatQty(row.total_qty)}</td>
+                        <td>${esc(row.user_name || '-')}</td>
+                    </tr>
+                `);
+            });
+        }
+
+        const start = data.total === 0 ? 0 : (data.page - 1) * data.per_page + 1;
+        const end = Math.min(data.page * data.per_page, data.total);
+        $('#histPageInfo').text(`Hiển thị ${start}-${end} / ${data.total} phiếu (trang ${data.page}/${histTotalPages || 1})`);
+
+        $('#histPrevBtn').prop('disabled', data.page <= 1);
+        $('#histNextBtn').prop('disabled', data.page >= histTotalPages);
+    }
+
+    function formatDateTime(value) {
+        if (!value) return '-';
+        const parts = value.split(' ');
+        const d = parts[0].split('-');
+        const time = (parts[1] || '').substring(0, 5);
+        return `${d[2]}/${d[1]}/${d[0]} ${time}`;
+    }
+
+    function formatQty(value) {
+        const n = parseFloat(value) || 0;
+        return n % 1 === 0 ? n.toLocaleString('vi-VN') : n.toLocaleString('vi-VN', { maximumFractionDigits: 3 });
+    }
+
+    function esc(value) {
+        return $('<div>').text(value === null || value === undefined ? '' : value).html();
+    }
+
+    $('#histFilterBtn').on('click', function() {
+        loadHistory(1);
+    });
+
+    $('#histSearch').on('keypress', function(e) {
+        if (e.which === 13) {
+            loadHistory(1);
+        }
+    });
+
+    $('#histTodayBtn').on('click', function() {
+        $('#histDateFrom').val(todayStr());
+        $('#histDateTo').val(todayStr());
+        loadHistory(1);
+    });
+
+    $('#histWeekBtn').on('click', function() {
+        $('#histDateFrom').val(daysAgoStr(6));
+        $('#histDateTo').val(todayStr());
+        loadHistory(1);
+    });
+
+    $('#histAllBtn').on('click', function() {
+        $('#histDateFrom').val('');
+        $('#histDateTo').val('');
+        loadHistory(1);
+    });
+
+    $('#histPrevBtn').on('click', function() {
+        if (histPage > 1) loadHistory(histPage - 1);
+    });
+
+    $('#histNextBtn').on('click', function() {
+        if (histPage < histTotalPages) loadHistory(histPage + 1);
+    });
+
+    // Mặc định mở tab lịch sử là xem hôm nay
+    $('#history-tab').on('shown.bs.tab', function() {
+        if (!$('#histDateFrom').val() && !$('#histDateTo').val() && !$('#histSearch').val()) {
+            $('#histDateFrom').val(todayStr());
+            $('#histDateTo').val(todayStr());
+        }
+        loadHistory(1);
     });
 
     // ========== QUẢN LÝ SHOP TRIỂN KHAI ==========

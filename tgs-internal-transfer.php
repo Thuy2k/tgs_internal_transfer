@@ -3,7 +3,7 @@
  * Plugin Name: TGS Internal Transfer
  * Plugin URI: https://bizgpt.vn/
  * Description: Plugin quản lý chuyển kho nội bộ từ HTsoft Excel - Tạo phiếu mua nội bộ và nhập tự động
- * Version: 1.0.0
+ * Version: 1.1.0
  * Author: BIZGPT_AI
  * Author URI: https://bizgpt.vn/
  * License: GPL v2 or later
@@ -15,7 +15,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Constants
-define('TGS_INTERNAL_TRANSFER_VERSION', '1.0.0');
+define('TGS_INTERNAL_TRANSFER_VERSION', '1.1.0');
 define('TGS_INTERNAL_TRANSFER_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('TGS_INTERNAL_TRANSFER_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -43,6 +43,7 @@ class TGS_Internal_Transfer {
         add_action('wp_ajax_tgs_it_get_deployment_shops', array($this, 'ajax_get_deployment_shops'));
         add_action('wp_ajax_tgs_it_save_deployment_shop', array($this, 'ajax_save_deployment_shop'));
         add_action('wp_ajax_tgs_it_delete_deployment_shop', array($this, 'ajax_delete_deployment_shop'));
+        add_action('wp_ajax_tgs_it_get_history', array($this, 'ajax_get_history'));
 
         // Include required files
         $this->includes();
@@ -114,8 +115,19 @@ class TGS_Internal_Transfer {
         ));
     }
 
-    public function ajax_parse_excel() {
+    /**
+     * Kiểm tra nonce + quyền cho mọi AJAX của plugin
+     */
+    private function check_request() {
         check_ajax_referer('tgs_internal_transfer_nonce', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(array('message' => 'Bạn không có quyền thực hiện thao tác này'), 403);
+        }
+    }
+
+    public function ajax_parse_excel() {
+        $this->check_request();
 
         try {
             $excel_data = json_decode(stripslashes($_POST['excel_data']), true);
@@ -131,7 +143,7 @@ class TGS_Internal_Transfer {
     }
 
     public function ajax_create_vouchers() {
-        check_ajax_referer('tgs_internal_transfer_nonce', 'nonce');
+        $this->check_request();
 
         try {
             $voucher_code = sanitize_text_field($_POST['voucher_code']);
@@ -149,13 +161,19 @@ class TGS_Internal_Transfer {
 
             wp_send_json_success($result);
 
+        } catch (TGS_IT_Duplicate_Voucher_Exception $e) {
+            // Phiếu đã được người khác tạo -> không phải lỗi, chỉ cần báo để UI đánh dấu
+            wp_send_json_error(array(
+                'code' => 'already_created',
+                'message' => $e->getMessage(),
+            ));
         } catch (Exception $e) {
             wp_send_json_error(array('message' => $e->getMessage()));
         }
     }
 
     public function ajax_get_deployment_shops() {
-        check_ajax_referer('tgs_internal_transfer_nonce', 'nonce');
+        $this->check_request();
 
         try {
             global $wpdb;
@@ -173,7 +191,7 @@ class TGS_Internal_Transfer {
     }
 
     public function ajax_save_deployment_shop() {
-        check_ajax_referer('tgs_internal_transfer_nonce', 'nonce');
+        $this->check_request();
 
         try {
             global $wpdb;
@@ -226,7 +244,7 @@ class TGS_Internal_Transfer {
     }
 
     public function ajax_delete_deployment_shop() {
-        check_ajax_referer('tgs_internal_transfer_nonce', 'nonce');
+        $this->check_request();
 
         try {
             global $wpdb;
@@ -243,6 +261,198 @@ class TGS_Internal_Transfer {
         } catch (Exception $e) {
             wp_send_json_error(array('message' => $e->getMessage()));
         }
+    }
+
+    /**
+     * Lịch sử phiếu đã tạo - lọc theo ngày tạo + tìm theo mã shop / tên shop / mã phiếu
+     */
+    public function ajax_get_history() {
+        $this->check_request();
+
+        try {
+            global $wpdb;
+
+            $tracker_table = $wpdb->base_prefix . 'global_transfer_voucher_tracker';
+            $shops_table = $wpdb->base_prefix . 'global_deployment_shops';
+
+            $date_from = $this->sanitize_date(isset($_POST['date_from']) ? $_POST['date_from'] : '');
+            $date_to = $this->sanitize_date(isset($_POST['date_to']) ? $_POST['date_to'] : '');
+            $search = isset($_POST['search']) ? trim(sanitize_text_field($_POST['search'])) : '';
+            $page = isset($_POST['page']) ? max(1, intval($_POST['page'])) : 1;
+            $per_page = isset($_POST['per_page']) ? min(200, max(10, intval($_POST['per_page']))) : 50;
+
+            $where = array('1=1');
+            $args = array();
+
+            if ($date_from) {
+                $where[] = 't.created_at >= %s';
+                $args[] = $date_from . ' 00:00:00';
+            }
+            if ($date_to) {
+                $where[] = 't.created_at <= %s';
+                $args[] = $date_to . ' 23:59:59';
+            }
+            if ($search !== '') {
+                $like = '%' . $wpdb->esc_like($search) . '%';
+                $where[] = '(t.site_code LIKE %s OR s.shop_name LIKE %s OR t.voucher_code LIKE %s)';
+                $args[] = $like;
+                $args[] = $like;
+                $args[] = $like;
+            }
+
+            $where_sql = implode(' AND ', $where);
+
+            $from_sql = "FROM {$tracker_table} t
+                         LEFT JOIN {$shops_table} s ON s.tgs_site_code = t.site_code
+                         WHERE {$where_sql}";
+
+            // Tổng quan: bao nhiêu phiếu, bao nhiêu shop trong khoảng lọc
+            $summary_sql = "SELECT COUNT(*) AS total_vouchers,
+                                   COUNT(DISTINCT t.site_code) AS total_shops
+                            {$from_sql}";
+            $summary = $wpdb->get_row(
+                $args ? $wpdb->prepare($summary_sql, $args) : $summary_sql,
+                ARRAY_A
+            );
+
+            $total = intval($summary['total_vouchers']);
+
+            $rows_sql = "SELECT t.id, t.voucher_code, t.site_code, t.blog_id,
+                                t.purchase_ledger_id, t.import_ledger_id,
+                                t.user_id, t.created_at,
+                                s.shop_name, s.is_active AS shop_is_active,
+                                u.display_name AS user_name
+                         FROM {$tracker_table} t
+                         LEFT JOIN {$shops_table} s ON s.tgs_site_code = t.site_code
+                         LEFT JOIN {$wpdb->users} u ON u.ID = t.user_id
+                         WHERE {$where_sql}
+                         ORDER BY t.created_at DESC, t.id DESC
+                         LIMIT %d OFFSET %d";
+
+            $rows_args = array_merge($args, array($per_page, ($page - 1) * $per_page));
+            $rows = $wpdb->get_results($wpdb->prepare($rows_sql, $rows_args), ARRAY_A);
+
+            $rows = $this->enrich_history_rows($rows);
+
+            wp_send_json_success(array(
+                'rows' => $rows,
+                'total' => $total,
+                'total_shops' => intval($summary['total_shops']),
+                'page' => $page,
+                'per_page' => $per_page,
+                'total_pages' => $per_page > 0 ? (int) ceil($total / $per_page) : 1,
+            ));
+        } catch (Exception $e) {
+            wp_send_json_error(array('message' => $e->getMessage()));
+        }
+    }
+
+    /**
+     * Bổ sung mã phiếu + số dòng hàng cho từng dòng lịch sử.
+     * Phiếu nằm ở bảng của từng blog nên phải query theo nhóm blog_id.
+     */
+    private function enrich_history_rows($rows) {
+        global $wpdb;
+
+        if (empty($rows)) {
+            return array();
+        }
+
+        $by_blog = array();
+        foreach ($rows as $index => $row) {
+            $by_blog[intval($row['blog_id'])][] = $index;
+        }
+
+        // Blog có thể đã bị xóa -> bảng không tồn tại, không để lỗi SQL echo ra JSON
+        $suppress = $wpdb->suppress_errors(true);
+
+        foreach ($by_blog as $blog_id => $indexes) {
+            if ($blog_id <= 0) {
+                continue;
+            }
+
+            $prefix = $wpdb->get_blog_prefix($blog_id);
+
+            $ledger_ids = array();
+            $import_ids = array();
+            foreach ($indexes as $index) {
+                if (!empty($rows[$index]['purchase_ledger_id'])) {
+                    $ledger_ids[] = intval($rows[$index]['purchase_ledger_id']);
+                }
+                if (!empty($rows[$index]['import_ledger_id'])) {
+                    $ledger_ids[] = intval($rows[$index]['import_ledger_id']);
+                    $import_ids[] = intval($rows[$index]['import_ledger_id']);
+                }
+            }
+
+            $ledgers = array();
+            if ($ledger_ids) {
+                $in = implode(',', array_unique($ledger_ids));
+                $results = $wpdb->get_results(
+                    "SELECT local_ledger_id, local_ledger_code, is_deleted
+                     FROM {$prefix}local_ledger
+                     WHERE local_ledger_id IN ({$in})",
+                    ARRAY_A
+                );
+                foreach ((array) $results as $ledger) {
+                    $ledgers[intval($ledger['local_ledger_id'])] = $ledger;
+                }
+            }
+
+            $item_stats = array();
+            if ($import_ids) {
+                $in = implode(',', array_unique($import_ids));
+                $results = $wpdb->get_results(
+                    "SELECT local_ledger_id, COUNT(*) AS items_count, SUM(quantity) AS total_qty
+                     FROM {$prefix}local_ledger_item
+                     WHERE local_ledger_id IN ({$in}) AND is_deleted = 0
+                     GROUP BY local_ledger_id",
+                    ARRAY_A
+                );
+                foreach ((array) $results as $stat) {
+                    $item_stats[intval($stat['local_ledger_id'])] = $stat;
+                }
+            }
+
+            foreach ($indexes as $index) {
+                $purchase_id = intval($rows[$index]['purchase_ledger_id']);
+                $import_id = intval($rows[$index]['import_ledger_id']);
+
+                $rows[$index]['purchase_ledger_code'] = isset($ledgers[$purchase_id])
+                    ? $ledgers[$purchase_id]['local_ledger_code'] : '';
+                $rows[$index]['import_ledger_code'] = isset($ledgers[$import_id])
+                    ? $ledgers[$import_id]['local_ledger_code'] : '';
+                $rows[$index]['is_ledger_deleted'] = isset($ledgers[$purchase_id])
+                    ? intval($ledgers[$purchase_id]['is_deleted']) : 0;
+                $rows[$index]['ledger_missing'] = ($purchase_id > 0 && !isset($ledgers[$purchase_id])) ? 1 : 0;
+                $rows[$index]['items_count'] = isset($item_stats[$import_id])
+                    ? intval($item_stats[$import_id]['items_count']) : 0;
+                $rows[$index]['total_qty'] = isset($item_stats[$import_id])
+                    ? floatval($item_stats[$import_id]['total_qty']) : 0;
+
+                // Shop đã bị xóa khỏi danh sách triển khai -> lấy tên site làm fallback
+                if (empty($rows[$index]['shop_name'])) {
+                    $rows[$index]['shop_name'] = get_blog_option($blog_id, 'blogname', '');
+                }
+            }
+        }
+
+        $wpdb->suppress_errors($suppress);
+
+        return $rows;
+    }
+
+    /**
+     * Chỉ nhận ngày dạng YYYY-MM-DD
+     */
+    private function sanitize_date($value) {
+        $value = trim(sanitize_text_field($value));
+
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $value)) {
+            return '';
+        }
+
+        return $value;
     }
 }
 
