@@ -12,6 +12,24 @@ if (!defined('ABSPATH')) {
 class TGS_IT_Excel_Parser {
 
     /**
+     * Ghi log chẩn đoán — MẶC ĐỊNH TẮT.
+     *
+     * Trước đây các lệnh error_log() ở đây chạy vô điều kiện: mỗi dòng Excel đẻ ra
+     * 2-3 dòng log, mà find_columns() còn log thêm 3-7 dòng cho MỖI dòng cho tới khi
+     * gặp header. File vài nghìn dòng là debug.log phình lên hàng chục nghìn dòng,
+     * lấn át log lỗi thật và làm chậm import vì ghi đĩa liên tục.
+     *
+     * Vẫn giữ lại nội dung log vì nó có ích thật (vụ mã kho "08-LC" vs "8-LC").
+     * Cần bật lại thì thêm vào wp-config.php:
+     *     define('TGS_IT_DEBUG', true);
+     */
+    private function debug_log($message) {
+        if (defined('TGS_IT_DEBUG') && TGS_IT_DEBUG) {
+            error_log($message);
+        }
+    }
+
+    /**
      * Parse và nhóm dữ liệu Excel theo (Số phiếu + Kho nhập)
      *
      * @param array $excel_data Dữ liệu từ SheetJS
@@ -43,9 +61,9 @@ class TGS_IT_Excel_Parser {
         }
 
         // Debug: Log danh sách shop
-        error_log("=== Deployment Shops ===");
+        $this->debug_log("=== Deployment Shops ===");
         foreach ($deployment_shops as $code => $shop) {
-            error_log("Code: {$code}, Blog ID: {$shop->blog_id}, Name: {$shop->shop_name}");
+            $this->debug_log("Code: {$code}, Blog ID: {$shop->blog_id}, Name: {$shop->shop_name}");
         }
 
         // Lấy danh sách phiếu đã tạo
@@ -85,19 +103,19 @@ class TGS_IT_Excel_Parser {
             $quantity = $this->get_cell_value($row, $col_indices['qty_in_col']);
             $note = $this->get_cell_value($row, $col_indices['note_col']);
 
-            error_log("=== Processing Row ===");
-            error_log("Confirmed: {$confirmed}, Voucher: {$voucher_code}, Warehouse: {$warehouse_in}, SKU: {$sku}");
+            $this->debug_log("=== Processing Row ===");
+            $this->debug_log("Confirmed: {$confirmed}, Voucher: {$voucher_code}, Warehouse: {$warehouse_in}, SKU: {$sku}");
 
             // Bỏ qua dòng không hợp lệ
             if (empty($voucher_code) || empty($sku)) {
-                error_log("SKIP: Empty voucher or SKU");
+                $this->debug_log("SKIP: Empty voucher or SKU");
                 continue;
             }
 
             // Kiểm tra cột 1: Đã xác nhận = TRUE (hoặc 1 nếu Excel convert boolean)
             $confirmed_normalized = strtoupper(trim($confirmed));
             if ($confirmed_normalized !== 'TRUE' && $confirmed != '1' && $confirmed !== 1) {
-                error_log("SKIP: Confirmed != TRUE (value: {$confirmed})");
+                $this->debug_log("SKIP: Confirmed != TRUE (value: {$confirmed})");
                 continue;
             }
 
@@ -108,11 +126,11 @@ class TGS_IT_Excel_Parser {
             }
 
             // Debug: Log warehouse_in
-            error_log("Row SKU: {$sku}, Warehouse In (raw): " . $this->get_cell_value($row, $col_indices['warehouse_in_col']) . ", Normalized: {$warehouse_in}");
+            $this->debug_log("Row SKU: {$sku}, Warehouse In (raw): " . $this->get_cell_value($row, $col_indices['warehouse_in_col']) . ", Normalized: {$warehouse_in}");
 
             // Kiểm tra kho nhập có trong danh sách triển khai không
             if (!isset($deployment_shops[$warehouse_in])) {
-                error_log("Warehouse {$warehouse_in} NOT in deployment list - SKIPPED");
+                $this->debug_log("Warehouse {$warehouse_in} NOT in deployment list - SKIPPED");
                 continue;
             }
 
@@ -177,14 +195,14 @@ class TGS_IT_Excel_Parser {
      * Tìm các cột cần thiết trong header - Dựa theo thứ tự cột cố định từ HTsoft
      */
     private function find_columns($row) {
-        error_log("=== Checking Row for Header ===");
-        error_log("Row count: " . count($row));
-        error_log("Col 0: " . (isset($row[0]) ? $row[0] : 'EMPTY'));
-        error_log("Col 1: " . (isset($row[1]) ? $row[1] : 'EMPTY'));
+        $this->debug_log("=== Checking Row for Header ===");
+        $this->debug_log("Row count: " . count($row));
+        $this->debug_log("Col 0: " . (isset($row[0]) ? $row[0] : 'EMPTY'));
+        $this->debug_log("Col 1: " . (isset($row[1]) ? $row[1] : 'EMPTY'));
 
         // Kiểm tra xem có phải header row không (có ít nhất 10 cột)
         if (count($row) < 10) {
-            error_log("Row has less than 10 columns - NOT HEADER");
+            $this->debug_log("Row has less than 10 columns - NOT HEADER");
             return null;
         }
 
@@ -195,15 +213,15 @@ class TGS_IT_Excel_Parser {
         $is_header = (strpos($col0, 'xác nhận') !== false || strpos($col0, 'confirmed') !== false) &&
                      (strpos($col1, 'phiếu') !== false || strpos($col1, 'voucher') !== false);
 
-        error_log("Col0 normalized: {$col0}");
-        error_log("Col1 normalized: {$col1}");
-        error_log("Is header: " . ($is_header ? 'YES' : 'NO'));
+        $this->debug_log("Col0 normalized: {$col0}");
+        $this->debug_log("Col1 normalized: {$col1}");
+        $this->debug_log("Is header: " . ($is_header ? 'YES' : 'NO'));
 
         if (!$is_header) {
             return null;
         }
 
-        error_log("=== HEADER FOUND ===");
+        $this->debug_log("=== HEADER FOUND ===");
 
         // Mapping cố định theo thứ tự cột từ HTsoft Excel
         return array(
