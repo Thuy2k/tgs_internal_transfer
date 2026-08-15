@@ -124,7 +124,7 @@ if (!defined('ABSPATH')) {
                     </div>
                     <div class="col-md-4">
                         <label for="histSearch" class="form-label mb-1 small fw-bold">Tìm kiếm</label>
-                        <input type="text" class="form-control" id="histSearch" placeholder="Mã shop, tên shop hoặc mã phiếu HTsoft...">
+                        <input type="text" class="form-control" id="histSearch" placeholder="Mã shop, tên shop, mã phiếu hoặc SKU mới...">
                     </div>
                     <div class="col-md-4">
                         <button type="button" class="btn btn-primary" id="histFilterBtn">
@@ -160,12 +160,13 @@ if (!defined('ABSPATH')) {
                                 <th>Phiếu nhập</th>
                                 <th class="text-end">Số dòng</th>
                                 <th class="text-end">Tổng SL</th>
+                                <th>Mã hàng tạo mới</th>
                                 <th>Người tạo</th>
                             </tr>
                         </thead>
                         <tbody id="historyTableBody">
                             <tr>
-                                <td colspan="9" class="text-center text-muted py-4">
+                                <td colspan="10" class="text-center text-muted py-4">
                                     <i class="bx bx-loader bx-spin"></i> Đang tải...
                                 </td>
                             </tr>

@@ -19,6 +19,7 @@ class TGS_IT_Voucher_Creator {
 
     private $blog_id;
     private $wpdb;
+    private $created_products = array();
 
     public function __construct($blog_id) {
         global $wpdb;
@@ -36,6 +37,8 @@ class TGS_IT_Voucher_Creator {
      * @return array
      */
     public function create_vouchers($voucher_code, $site_code, $items, $note) {
+        $this->created_products = array();
+
         // Chặn sớm (không lock): phiếu đã tạo xong từ trước thì báo luôn,
         // tránh phải chờ lock ở bước claim bên dưới.
         $existing = $this->find_tracker_row($voucher_code, $site_code);
@@ -78,7 +81,12 @@ class TGS_IT_Voucher_Creator {
             $transfer_ledger_id = $this->create_transfer_ledger($purchase_ledger_id, $item_ids);
 
             // 8. Ghi ID phiếu vào dòng tracker đã chốt ở bước 0
-            $this->update_tracker_ledger_ids($tracker_id, $purchase_ledger_id, $import_ledger_id);
+            $this->update_tracker_ledger_ids(
+                $tracker_id,
+                $purchase_ledger_id,
+                $import_ledger_id,
+                $this->created_products
+            );
 
             $this->wpdb->query('COMMIT');
 
@@ -89,6 +97,7 @@ class TGS_IT_Voucher_Creator {
                 'import_ledger_id' => $import_ledger_id,
                 'transfer_ledger_id' => $transfer_ledger_id,
                 'total_items' => count($item_ids),
+                'created_products' => $this->created_products,
                 'message' => 'Tạo phiếu thành công',
             );
 
@@ -165,22 +174,12 @@ class TGS_IT_Voucher_Creator {
         $item_ids = array();
 
         foreach ($items as $item) {
-            // Query global_product_name_id từ SKU
-            $product = $this->wpdb->get_row($this->wpdb->prepare(
-                "SELECT global_product_name_id, global_product_name, global_product_sku
-                 FROM wp_global_product_name
-                 WHERE global_product_sku = %s AND is_deleted = 0",
-                $item['sku']
-            ));
-
-            if (!$product) {
-                throw new Exception("Không tìm thấy sản phẩm với SKU: {$item['sku']}");
-            }
+            $product = $this->find_or_create_product($item);
 
             $data = array(
                 'local_ledger_id' => $ledger_id,
                 'global_product_name_id' => $product->global_product_name_id,
-                'local_product_sku' => $item['sku'],
+                'local_product_sku' => $product->global_product_sku,
                 'quantity' => $item['quantity'],
                 'local_ledger_item_note' => $item['note'],
                 'local_ledger_item_type' => 1,
@@ -196,6 +195,128 @@ class TGS_IT_Voucher_Creator {
         }
 
         return $item_ids;
+    }
+
+    /**
+     * Lấy sản phẩm theo SKU hoặc tự tạo từ Mã hàng + Tên hàng trong file Excel.
+     *
+     * Sản phẩm được tạo trong cùng transaction với phiếu, nên sẽ tự rollback nếu
+     * việc tạo phiếu thất bại ở bước sau.
+     */
+    private function find_or_create_product($item) {
+        $table = $this->wpdb->base_prefix . 'global_product_name';
+        $sku = sanitize_text_field(trim((string) ($item['sku'] ?? '')));
+        $product_name = sanitize_text_field(trim((string) ($item['product_name'] ?? '')));
+
+        if ($sku === '') {
+            throw new Exception('Mã hàng không được để trống.');
+        }
+
+        // Lấy cả bản ghi đã xóa mềm để có thể khôi phục, tránh lỗi trùng SKU.
+        $product = $this->wpdb->get_row($this->wpdb->prepare(
+            "SELECT global_product_name_id, global_product_name, global_product_sku, is_deleted
+             FROM {$table}
+             WHERE global_product_sku = %s
+             LIMIT 1",
+            $sku
+        ));
+
+        if ($product && intval($product->is_deleted) === 0) {
+            return $product;
+        }
+
+        if ($product_name === '') {
+            throw new Exception("Không thể tạo sản phẩm SKU {$sku}: thiếu Tên hàng.");
+        }
+
+        $now = current_time('mysql');
+
+        if ($product) {
+            $updated = $this->wpdb->update(
+                $table,
+                array(
+                    'global_blog_id' => get_current_blog_id(),
+                    'global_product_name' => $product_name,
+                    'global_product_status' => '1',
+                    'is_deleted' => 0,
+                    'deleted_at' => null,
+                    'updated_at' => $now,
+                ),
+                array('global_product_name_id' => $product->global_product_name_id)
+            );
+
+            if ($updated === false) {
+                throw new Exception("Không thể khôi phục sản phẩm SKU {$sku}: {$this->wpdb->last_error}");
+            }
+
+            $product->global_product_name = $product_name;
+            $product->global_product_sku = $sku;
+            $product->is_deleted = 0;
+            return $product;
+        }
+
+        $meta = wp_json_encode(array(
+            'sku' => $sku,
+            'weight' => 0,
+            'unit' => 'cái',
+            'brand' => '',
+            'origin' => '',
+            'gallery' => array(),
+        ), JSON_UNESCAPED_UNICODE);
+
+        $inserted = $this->wpdb->insert($table, array(
+            'global_blog_id' => get_current_blog_id(),
+            'global_product_thumbnail' => '',
+            'global_product_name' => $product_name,
+            'global_product_description' => '',
+            'global_product_content' => '',
+            'global_product_status' => '1',
+            'global_product_meta' => $meta,
+            'global_product_point' => 0,
+            'global_product_barcode_url_main' => '',
+            'global_product_is_tracking' => 0,
+            'global_product_tag' => 0,
+            'user_id' => get_current_user_id(),
+            'is_deleted' => 0,
+            'created_at' => $now,
+            'updated_at' => $now,
+            'global_product_price' => 0,
+            'global_product_tax' => 0,
+            'global_product_price_after_tax' => 0,
+            'global_product_sku' => $sku,
+            'global_product_unit' => 'cái',
+            'global_product_category_path' => '',
+            'global_product_barcode_main' => '',
+            'global_product_list_category_id' => wp_json_encode(array()),
+            'weighted_avg_cost' => 0,
+        ));
+
+        if ($inserted !== false) {
+            $this->created_products[$sku] = $product_name;
+
+            return (object) array(
+                'global_product_name_id' => $this->wpdb->insert_id,
+                'global_product_name' => $product_name,
+                'global_product_sku' => $sku,
+                'is_deleted' => 0,
+            );
+        }
+
+        // Nếu hai request đồng thời cùng tạo một SKU, dùng bản ghi request kia vừa tạo.
+        $insert_error = $this->wpdb->last_error;
+        $product = $this->wpdb->get_row($this->wpdb->prepare(
+            "SELECT global_product_name_id, global_product_name, global_product_sku, is_deleted
+             FROM {$table}
+             WHERE global_product_sku = %s AND is_deleted = 0
+             LIMIT 1",
+            $sku
+        ));
+
+        if ($product) {
+            return $product;
+        }
+
+        throw new Exception("Không thể tạo sản phẩm SKU {$sku}: {$insert_error}");
     }
 
     /**
@@ -432,12 +553,13 @@ class TGS_IT_Voucher_Creator {
     /**
      * Ghi ID 2 phiếu vào dòng tracker đã chốt
      */
-    private function update_tracker_ledger_ids($tracker_id, $purchase_ledger_id, $import_ledger_id) {
+    private function update_tracker_ledger_ids($tracker_id, $purchase_ledger_id, $import_ledger_id, $created_products) {
         $updated = $this->wpdb->update(
             $this->tracker_table(),
             array(
                 'purchase_ledger_id' => $purchase_ledger_id,
                 'import_ledger_id' => $import_ledger_id,
+                'created_product_skus' => wp_json_encode((object) $created_products, JSON_UNESCAPED_UNICODE),
             ),
             array('id' => $tracker_id)
         );

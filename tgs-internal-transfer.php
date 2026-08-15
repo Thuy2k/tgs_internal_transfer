@@ -3,7 +3,7 @@
  * Plugin Name: TGS Internal Transfer
  * Plugin URI: https://bizgpt.vn/
  * Description: Plugin quản lý chuyển kho nội bộ từ HTsoft Excel - Tạo phiếu mua nội bộ và nhập tự động
- * Version: 1.1.0
+ * Version: 1.1.1
  * Author: BIZGPT_AI
  * Author URI: https://bizgpt.vn/
  * License: GPL v2 or later
@@ -15,7 +15,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Constants
-define('TGS_INTERNAL_TRANSFER_VERSION', '1.1.0');
+define('TGS_INTERNAL_TRANSFER_VERSION', '1.1.1');
 define('TGS_INTERNAL_TRANSFER_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('TGS_INTERNAL_TRANSFER_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -294,7 +294,8 @@ class TGS_Internal_Transfer {
             }
             if ($search !== '') {
                 $like = '%' . $wpdb->esc_like($search) . '%';
-                $where[] = '(t.site_code LIKE %s OR s.shop_name LIKE %s OR t.voucher_code LIKE %s)';
+                $where[] = '(t.site_code LIKE %s OR s.shop_name LIKE %s OR t.voucher_code LIKE %s OR t.created_product_skus LIKE %s)';
+                $args[] = $like;
                 $args[] = $like;
                 $args[] = $like;
                 $args[] = $like;
@@ -319,7 +320,7 @@ class TGS_Internal_Transfer {
 
             $rows_sql = "SELECT t.id, t.voucher_code, t.site_code, t.blog_id,
                                 t.purchase_ledger_id, t.import_ledger_id,
-                                t.user_id, t.created_at,
+                                t.created_product_skus, t.user_id, t.created_at,
                                 s.shop_name, s.is_active AS shop_is_active,
                                 u.display_name AS user_name
                          FROM {$tracker_table} t
@@ -331,6 +332,31 @@ class TGS_Internal_Transfer {
 
             $rows_args = array_merge($args, array($per_page, ($page - 1) * $per_page));
             $rows = $wpdb->get_results($wpdb->prepare($rows_sql, $rows_args), ARRAY_A);
+
+            foreach ($rows as &$row) {
+                $stored_products = json_decode((string) $row['created_product_skus']);
+                $created_products = array();
+
+                // Dữ liệu mới: {"SKU": "Tên sản phẩm"}.
+                if (is_object($stored_products)) {
+                    foreach (get_object_vars($stored_products) as $sku => $product_name) {
+                        if (is_string($product_name)) {
+                            $created_products[(string) $sku] = $product_name;
+                        }
+                    }
+                } elseif (is_array($stored_products)) {
+                    // Tương thích dữ liệu cũ: ["SKU1", "SKU2"].
+                    foreach ($stored_products as $sku) {
+                        if (is_string($sku)) {
+                            $created_products[$sku] = '';
+                        }
+                    }
+                }
+
+                $row['created_products'] = (object) $created_products;
+                unset($row['created_product_skus']);
+            }
+            unset($row);
 
             $rows = $this->enrich_history_rows($rows);
 

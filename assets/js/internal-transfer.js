@@ -274,7 +274,7 @@ jQuery(document).ready(function($) {
         histPage = page || 1;
 
         $('#historyTableBody').html(
-            '<tr><td colspan="9" class="text-center text-muted py-4"><i class="bx bx-loader bx-spin"></i> Đang tải...</td></tr>'
+            '<tr><td colspan="10" class="text-center text-muted py-4"><i class="bx bx-loader bx-spin"></i> Đang tải...</td></tr>'
         );
 
         $.ajax({
@@ -293,14 +293,14 @@ jQuery(document).ready(function($) {
                     renderHistory(response.data);
                 } else {
                     $('#historyTableBody').html(
-                        '<tr><td colspan="9" class="text-center text-danger py-4">' +
+                        '<tr><td colspan="10" class="text-center text-danger py-4">' +
                         ((response.data && response.data.message) || 'Lỗi tải dữ liệu') + '</td></tr>'
                     );
                 }
             },
             error: function() {
                 $('#historyTableBody').html(
-                    '<tr><td colspan="9" class="text-center text-danger py-4">Lỗi kết nối server</td></tr>'
+                    '<tr><td colspan="10" class="text-center text-danger py-4">Lỗi kết nối server</td></tr>'
                 );
             }
         });
@@ -323,7 +323,7 @@ jQuery(document).ready(function($) {
 
         if (!data.rows.length) {
             $tbody.html(
-                '<tr><td colspan="9" class="text-center text-muted py-4">' +
+                '<tr><td colspan="10" class="text-center text-muted py-4">' +
                 'Không có phiếu nào trong khoảng lọc này</td></tr>'
             );
         } else {
@@ -348,6 +348,18 @@ jQuery(document).ready(function($) {
                     ? ' <span class="badge bg-secondary">Tạm dừng</span>'
                     : '';
 
+                const createdProducts = row.created_products && typeof row.created_products === 'object'
+                    ? Object.entries(row.created_products)
+                    : [];
+                const createdSkuCell = createdProducts.length
+                    ? createdProducts.map(([sku, name]) => `
+                        <div class="mb-1">
+                            <code>${esc(sku)}</code>
+                            ${name ? `<small class="d-block text-muted">${esc(name)}</small>` : ''}
+                        </div>
+                    `).join('')
+                    : '<span class="text-muted">—</span>';
+
                 $tbody.append(`
                     <tr>
                         <td class="text-nowrap">${formatDateTime(row.created_at)}</td>
@@ -358,6 +370,7 @@ jQuery(document).ready(function($) {
                         <td>${importCell}</td>
                         <td class="text-end"><strong>${row.items_count}</strong></td>
                         <td class="text-end">${formatQty(row.total_qty)}</td>
+                        <td>${createdSkuCell}</td>
                         <td>${esc(row.user_name || '-')}</td>
                     </tr>
                 `);
